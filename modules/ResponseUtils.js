@@ -2,7 +2,9 @@ import fs from 'fs'
 import etag from 'etag'
 import { getContentType, getStats } from './FileUtils'
 
-export const sendText = (res, statusCode, text) => {
+export const sendText = (res, statusCode, text, jsonpOpts) => {
+  text = withJsonp(text, jsonpOpts)
+
   res.writeHead(statusCode, {
     'Content-Type': 'text/plain',
     'Content-Length': text.length
@@ -11,8 +13,16 @@ export const sendText = (res, statusCode, text) => {
   res.end(text)
 }
 
-export const sendJSON = (res, json, maxAge = 0, statusCode = 200) => {
-  const text = JSON.stringify(json)
+function withJsonp(data, jsonpOpts) {
+  if (!jsonpOpts) return data
+  if (jsonpOpts.encoding && jsonpOpts.encoding!=='utf8')
+    data = new Buffer(data).toString(jsonpOpts.encoding)
+  data = jsonpOpts.callback+'('+JSON.stringify(typeof data.copy==='function' ? data.toString() : data)+')'
+  return data
+}
+
+export const sendJSON = (res, json, jsonpOpts, maxAge = 0, statusCode = 200) => {
+  const text = withJsonp(JSON.stringify(json), jsonpOpts)
 
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
@@ -23,16 +33,17 @@ export const sendJSON = (res, json, maxAge = 0, statusCode = 200) => {
   res.end(text)
 }
 
-export const sendInvalidURLError = (res, url) =>
-  sendText(res, 403, `Invalid URL: ${url}`)
+export const sendInvalidURLError = (res, url, jsonpOpts) =>
+  sendText(res, 403, `Invalid URL: ${url}`, jsonpOpts)
 
-export const sendNotFoundError = (res, what) =>
-  sendText(res, 404, `Not found: ${what}`)
+export const sendNotFoundError = (res, what, jsonpOpts) =>
+  sendText(res, 404, `Not found: ${what}`, jsonpOpts)
 
-export const sendServerError = (res, error) =>
-  sendText(res, 500, `Server error: ${error.message || error}`)
+export const sendServerError = (res, error, jsonpOpts) =>
+  sendText(res, 500, `Server error: ${error.message || error}`, jsonpOpts)
 
-export const sendHTML = (res, html, maxAge = 0, statusCode = 200) => {
+export const sendHTML = (res, html, jsonpOpts, maxAge = 0, statusCode = 200) => {
+  html = withJsonp(html, jsonpOpts)
   res.writeHead(statusCode, {
     'Content-Type': 'text/html',
     'Content-Length': html.length,
@@ -42,8 +53,11 @@ export const sendHTML = (res, html, maxAge = 0, statusCode = 200) => {
   res.end(html)
 }
 
-export const sendRedirect = (res, relativeLocation, maxAge = 0, statusCode = 302) => {
-  const location = res.req && res.req.baseUrl ? res.req.baseUrl + relativeLocation : relativeLocation
+export const sendRedirect = (res, relativeLocation, jsonpOpts, maxAge = 0, statusCode = 302) => {
+  let location = res.req && res.req.baseUrl ? res.req.baseUrl + relativeLocation : relativeLocation
+
+  if (jsonpOpts)
+    location += '?callback='+jsonpOpts.callback+(jsonpOpts.encoding?'&encoding='+jsonpOpts.encding:'')
 
   const html = `<p>You are being redirected to <a href="${location}">${location}</a>`
 
@@ -57,7 +71,7 @@ export const sendRedirect = (res, relativeLocation, maxAge = 0, statusCode = 302
   res.end(html)
 }
 
-export const sendFile = (res, file, stats, maxAge = 0) =>
+export const sendFile = (res, file, stats, jsonpOpts, maxAge = 0) =>
   Promise.resolve(stats || getStats(file))
     .then(stats => {
       let contentType = getContentType(file)
@@ -65,21 +79,37 @@ export const sendFile = (res, file, stats, maxAge = 0) =>
       if (contentType === 'text/html')
         contentType = 'text/plain' // We can't serve HTML because bad people :(
 
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Content-Length': stats.size,
-        'Cache-Control': `public, max-age=${maxAge}`,
-        'ETag': etag(stats)
-      })
+      if (jsonpOpts) {
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': `public, max-age=${maxAge}`,
+          'ETag': etag(stats)
+        })
 
-      const stream = fs.createReadStream(file)
+        fs.readFile(file, (err, data) => {
+          if (err)
+            sendServerError(res, err, jsonpOpts)
+          else
+            res.end(withJsonp(data, jsonpOpts))
+        })
+      }
+      else {
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': stats.size,
+          'Cache-Control': `public, max-age=${maxAge}`,
+          'ETag': etag(stats)
+        })
 
-      stream.on('error', (error) => {
-        sendServerError(res, error)
-      })
+        const stream = fs.createReadStream(file)
 
-      stream.pipe(res)
+        stream.on('error', (error) => {
+          sendServerError(res, error, jsonpOpts)
+        })
+
+        stream.pipe(res)
+      }
     })
     .catch(error => {
-      sendServerError(res, error)
+      sendServerError(res, error, jsonpOpts)
     })

@@ -106,13 +106,13 @@ export const createRequestHandler = (options = {}) => {
     if (url == null)
       return sendInvalidURLError(res, req.url)
 
-    const { pathname, search, query, packageName, version, filename } = url
+    const { pathname, search, query, jsonpOpts, packageName, version, filename } = url
     const displayName = `${packageName}@${version}`
 
     const isBlacklisted = blacklist.indexOf(packageName) !== -1
 
     if (isBlacklisted)
-      return sendText(res, 403, `Package ${packageName} is blacklisted`)
+      return sendText(res, 403, `Package ${packageName} is blacklisted`, jsonpOpts)
 
     // Step 1: Fetch the package from the registry and store a local copy.
     // Redirect if the URL does not specify an exact version number.
@@ -126,13 +126,13 @@ export const createRequestHandler = (options = {}) => {
         // Fetch package info from NPM registry.
         getPackageInfo(registryURL, packageName, (error, packageInfo) => {
           if (error)
-            return sendServerError(res, error)
+            return sendServerError(res, error, jsonpOpts)
 
           if (packageInfo == null)
-            return sendNotFoundError(res, `package "${packageName}"`)
+            return sendNotFoundError(res, `package "${packageName}"`, jsonpOpts)
 
           if (packageInfo.versions == null)
-            return sendServerError(res, new Error(`Unable to retrieve info for package ${packageName}`))
+            return sendServerError(res, new Error(`Unable to retrieve info for package ${packageName}`), jsonpOpts)
 
           const { versions, 'dist-tags': tags } = packageInfo
 
@@ -143,20 +143,20 @@ export const createRequestHandler = (options = {}) => {
 
             getPackage(tarballURL, packageDir, (error) => {
               if (error) {
-                sendServerError(res, error)
+                sendServerError(res, error, jsonpOpts)
               } else {
                 next(packageDir)
               }
             })
           } else if (version in tags) {
-            sendRedirect(res, createPackageURL(packageName, tags[version], filename, search), redirectTTL)
+            sendRedirect(res, createPackageURL(packageName, tags[version], filename, search), jsonpOpts, redirectTTL)
           } else {
             const maxVersion = maxSatisfyingVersion(Object.keys(versions), version)
 
             if (maxVersion) {
-              sendRedirect(res, createPackageURL(packageName, maxVersion, filename, search), redirectTTL)
+              sendRedirect(res, createPackageURL(packageName, maxVersion, filename, search), jsonpOpts, redirectTTL)
             } else {
-              sendNotFoundError(res, `package ${displayName}`)
+              sendNotFoundError(res, `package ${displayName}`, jsonpOpts)
             }
           }
         })
@@ -169,9 +169,9 @@ export const createRequestHandler = (options = {}) => {
       if (filename === bowerBundle) {
         createBowerPackage(packageDir, (error, file) => {
           if (error) {
-            sendServerError(res, error)
+            sendServerError(res, error, jsonpOpts)
           } else if (file == null) {
-            sendNotFoundError(res, `bower.zip in package ${displayName}`)
+            sendNotFoundError(res, `bower.zip in package ${displayName}`, jsonpOpts)
           } else {
             next('bower.zip', null)
           }
@@ -182,27 +182,27 @@ export const createRequestHandler = (options = {}) => {
         // Based on the URL, figure out which file they want.
         resolveFile(path, false, (error, file, stats) => {
           if (error) {
-            sendServerError(res, error)
+            sendServerError(res, error, jsonpOpts)
           } else if (file == null) {
-            sendNotFoundError(res, `file "${filename}" in package ${displayName}`)
+            sendNotFoundError(res, `file "${filename}" in package ${displayName}`, jsonpOpts)
           } else if (stats.isDirectory() && pathname[pathname.length - 1] !== '/') {
             // Append `/` to directory URLs
-            sendRedirect(res, pathname + '/' + search, OneYear)
+            sendRedirect(res, pathname + '/' + search, jsonpOpts, OneYear)
           } else {
-            next(file.replace(packageDir, ''), stats)
+            next(file.replace(packageDir, ''), stats, jsonpOpts)
           }
         })
       } else {
         // No filename in the URL. Try to serve the package's "main" file.
         readFile(joinPaths(packageDir, 'package.json'), 'utf8', (error, data) => {
           if (error)
-            return sendServerError(res, error)
+            return sendServerError(res, error, jsonpOpts)
 
           let packageConfig
           try {
             packageConfig = JSON.parse(data)
           } catch (error) {
-            return sendText(res, 500, `Error parsing ${displayName}/package.json: ${error.message}`)
+            return sendText(res, 500, `Error parsing ${displayName}/package.json: ${error.message}`, jsonpOpts)
           }
 
           let mainFilename
@@ -210,7 +210,7 @@ export const createRequestHandler = (options = {}) => {
 
           if (queryMain) {
             if (!(queryMain in packageConfig))
-              return sendNotFoundError(res, `field "${queryMain}" in ${displayName}/package.json`)
+              return sendNotFoundError(res, `field "${queryMain}" in ${displayName}/package.json`, jsonpOpts)
 
             mainFilename = packageConfig[queryMain]
           } else {
@@ -229,9 +229,9 @@ export const createRequestHandler = (options = {}) => {
 
           resolveFile(joinPaths(packageDir, mainFilename), true, (error, file, stats) => {
             if (error) {
-              sendServerError(res, error)
+              sendServerError(res, error, jsonpOpts)
             } else if (file == null) {
-              sendNotFoundError(res, `main file "${mainFilename}" in package ${displayName}`)
+              sendNotFoundError(res, `main file "${mainFilename}" in package ${displayName}`, jsonpOpts)
             } else {
               next(file.replace(packageDir, ''), stats)
             }
@@ -241,40 +241,40 @@ export const createRequestHandler = (options = {}) => {
     }
 
     // Step 3: Send the file, JSON metadata, or HTML directory listing.
-    const serveFile = (baseDir, path, stats) => {
+    const serveFile = (baseDir, path, stats, jsonpOpts) => {
       if (query.json != null) {
         generateMetadata(baseDir, path, stats, maximumDepth, (error, metadata) => {
           if (metadata) {
-            sendJSON(res, metadata, OneYear)
+            sendJSON(res, metadata, jsonpOpts, OneYear)
           } else {
-            sendServerError(res, `unable to generate JSON metadata for ${displayName}${filename}`)
+            sendServerError(res, `unable to generate JSON metadata for ${displayName}${filename}`, jsonpOpts)
           }
         })
       // TODO: Remove "stats == null" check when we remove Bower support.
       } else if (stats == null || stats.isFile()) {
-        sendFile(res, joinPaths(baseDir, path), stats, OneYear)
+        sendFile(res, joinPaths(baseDir, path), stats, jsonpOpts, OneYear)
       } else if (autoIndex && stats.isDirectory()) {
         getPackageInfo(registryURL, packageName, (error, packageInfo) => {
           if (error) {
-            sendServerError(res, `unable to generate index page for ${displayName}${filename}`)
+            sendServerError(res, `unable to generate index page for ${displayName}${filename}`, jsonpOpts)
           } else {
             generateDirectoryIndexHTML(packageInfo, version, baseDir, path, (error, html) => {
               if (html) {
-                sendHTML(res, html, OneYear)
+                sendHTML(res, html, jsonpOpts, OneYear)
               } else {
-                sendServerError(res, `unable to generate index page for ${displayName}${filename}`)
+                sendServerError(res, `unable to generate index page for ${displayName}${filename}`, jsonpOpts)
               }
             })
           }
         })
       } else {
-        sendInvalidURLError(res, `${displayName}${filename} is a ${getFileType(stats)}`)
+        sendInvalidURLError(res, `${displayName}${filename} is a ${getFileType(stats)}`, jsonpOpts)
       }
     }
 
     fetchPackage(packageDir => {
       findFile(packageDir, (file, stats) => {
-        serveFile(packageDir, file, stats)
+        serveFile(packageDir, file, stats, jsonpOpts)
       })
     })
   }

@@ -11,7 +11,10 @@ const decodeParam = (param) =>
 
 const ValidQueryKeys = {
   main: true,
-  json: true
+  json: true,
+  jsonp: true,
+  callback: true,
+  encoding: true
 }
 
 const queryIsValid = (query) =>
@@ -32,10 +35,16 @@ export const parsePackageURL = (url) => {
   const version = decodeParam(match[2]) || 'latest'
   const filename = decodeParam(match[3])
 
-  return {        // If the URL is /@scope/name@version/path.js?main=browser:
+  const jsonpOpts = query.callback || query.jsonp ? {
+    callback: query.callback || query.jsonp,
+    encoding: query.encoding
+  } : null
+
+  return {        // If the URL is /@scope/name@version/path.js?main=browser&callback=cb&encoding=utf8:
     pathname,     // /@scope/name@version/path.js
     search,       // ?main=browser
     query,        // { main: 'browser' }
+    jsonpOpts,        // { callback: 'cb', encoding: 'uf8' }
     packageName,  // @scope/name
     version,      // version
     filename      // /path.js
